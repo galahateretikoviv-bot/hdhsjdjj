@@ -186,3 +186,144 @@ const server = http.createServer(async (req, res) => {
     if (method === 'POST' && applyMatch) {
       const clanId = applyMatch[1];
       const body = await parseBody(req);
+      const { playerId } = body;
+      if (!playerId) return send(res, 400, { error: 'playerId required' });
+
+      const player = getPlayer(playerId);
+      const clan = getClan(clanId);
+      if (!clan) return send(res, 404, { error: 'Клан не найден' });
+      if (player.clanId) return send(res, 400, { error: 'Вы уже в клане' });
+
+      const existing = Object.values(db.applications).find(
+        a => a.clanId === clanId && a.playerId === playerId && a.status === 'pending'
+      );
+      if (existing) return send(res, 400, { error: 'Заявка уже отправлена' });
+
+      const appId = uid();
+      db.applications[appId] = {
+        id: appId,
+        clanId,
+        playerId,
+        playerName: player.name,
+        status: 'pending',
+        createdAt: Date.now()
+      };
+      saveDB(db);
+      return send(res, 200, { ok: true, message: 'Заявка отправлена', applicationId: appId });
+    }
+
+    const appsMatch = pathname.match(/^\/api\/clans\/([^/]+)\/applications$/);
+    if (method === 'GET' && appsMatch) {
+      const clanId = appsMatch[1];
+      const playerId = parsed.query.playerId;
+      if (!playerId) return send(res, 400, { error: 'playerId required' });
+
+      const clan = getClan(clanId);
+      if (!clan) return send(res, 404, { error: 'Клан не найден' });
+      if (clan.leaderId !== playerId) return send(res, 403, { error: 'Только лидер' });
+
+      const apps = Object.values(db.applications)
+        .filter(a => a.clanId === clanId && a.status === 'pending')
+        .map(a => ({
+          id: a.id,
+          playerId: a.playerId,
+          playerName: a.playerName,
+          createdAt: a.createdAt
+        }));
+      return send(res, 200, { applications: apps });
+    }
+
+    const actionMatch = pathname.match(/^\/api\/applications\/([^/]+)\/(accept|reject)$/);
+    if (method === 'POST' && actionMatch) {
+      const appId = actionMatch[1];
+      const action = actionMatch[2];
+      const body = await parseBody(req);
+      const { playerId } = body;
+      if (!playerId) return send(res, 400, { error: 'playerId required' });
+
+      const application = db.applications[appId];
+      if (!application || application.status !== 'pending') {
+        return send(res, 404, { error: 'Заявка не найдена' });
+      }
+
+      const clan = getClan(application.clanId);
+      if (!clan) return send(res, 404, { error: 'Клан не найден' });
+      if (clan.leaderId !== playerId) return send(res, 403, { error: 'Только лидер' });
+
+      if (action === 'reject') {
+        application.status = 'rejected';
+        saveDB(db);
+        return send(res, 200, { ok: true, message: 'Заявка отклонена' });
+      }
+
+      const target = getPlayer(application.playerId);
+      if (target.clanId) {
+        application.status = 'rejected';
+        saveDB(db);
+        return send(res, 400, { error: 'Игрок уже в другом клане' });
+      }
+
+      target.clanId = clan.id;
+      if (!clan.members.includes(application.playerId)) {
+        clan.members.push(application.playerId);
+      }
+      application.status = 'accepted';
+      saveDB(db);
+
+      return send(res, 200, {
+        ok: true,
+        message: 'Игрок принят',
+        clan: { id: clan.id, name: clan.name, memberCount: clan.members.length }
+      });
+    }
+
+    if (method === 'POST' && pathname === '/api/clans/leave') {
+      const body = await parseBody(req);
+      const { playerId } = body;
+      if (!playerId) return send(res, 400, { error: 'playerId required' });
+
+      const player = getPlayer(playerId);
+      if (!player.clanId) return send(res, 400, { error: 'Вы не в клане' });
+
+      const clan = getClan(player.clanId);
+      if (clan) {
+        clan.members = clan.members.filter(id => id !== playerId);
+        if (clan.leaderId === playerId) {
+          if (clan.members.length > 0) {
+            clan.leaderId = clan.members[0];
+          } else {
+            delete db.clans[clan.id];
+          }
+        }
+      }
+      player.clanId = null;
+      saveDB(db);
+      return send(res, 200, { ok: true, message: 'Вы покинули клан' });
+    }
+
+    const upMatch = pathname.match(/^\/api\/clans\/([^/]+)\/upgrade-fan$/);
+    if (method === 'POST' && upMatch) {
+      const clanId = upMatch[1];
+      const body = await parseBody(req);
+      const { playerId } = body;
+      if (!playerId) return send(res, 400, { error: 'playerId required' });
+
+      const clan = getClan(clanId);
+      if (!clan) return send(res, 404, { error: 'Клан не найден' });
+      if (clan.leaderId !== playerId) return send(res, 403, { error: 'Только лидер' });
+
+      clan.clanFanLevel = (clan.clanFanLevel || 1) + 1;
+      saveDB(db);
+      return send(res, 200, { ok: true, clanFanLevel: clan.clanFanLevel });
+    }
+
+    send(res, 404, { error: 'Not found' });
+  } catch (err) {
+    console.error(err);
+    send(res, 500, { error: 'Server error' });
+  }
+});
+
+server.listen(PORT, () => {
+  console.log('Fan Clicker Clans API → http://localhost:' + PORT);
+});

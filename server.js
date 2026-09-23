@@ -1,6 +1,8 @@
 const http = require('http');
 const crypto = require('crypto');
 const url = require('url');
+const fs = require('fs');
+const path = require('path');
 const { Pool } = require('pg');
 const WebSocket = require('ws');
 
@@ -29,6 +31,20 @@ function send(res, status, data) {
     'Access-Control-Allow-Headers': 'Content-Type'
   });
   res.end(JSON.stringify(data));
+}
+
+function sendHtml(res, filePath) {
+  try {
+    const html = fs.readFileSync(filePath, 'utf8');
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-cache'
+    });
+    res.end(html);
+  } catch (e) {
+    res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('index.html not found on server');
+  }
 }
 
 function parseBody(req) {
@@ -75,8 +91,19 @@ const server = http.createServer(async (req, res) => {
   const pathname = parsed.pathname;
   const method = req.method;
 
+  // === Отдаём index.html на главной ===
+  if (method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
+    return sendHtml(res, path.join(__dirname, 'index.html'));
+  }
+
+  // favicon — заглушка
+  if (method === 'GET' && pathname === '/favicon.ico') {
+    res.writeHead(204);
+    return res.end();
+  }
+
   try {
-    if (method === 'GET' && (pathname === '/' || pathname === '/api')) {
+    if (method === 'GET' && pathname === '/api') {
       return send(res, 200, { ok: true, service: 'Fan Clicker Clans API', version: '3.0-ws-members' });
     }
 
@@ -136,7 +163,6 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { clans: list });
     }
 
-    // GET /api/clans/:id/members
     const membersMatch = pathname.match(/^\/api\/clans\/([^/]+)\/members$/);
     if (method === 'GET' && membersMatch) {
       const clanId = membersMatch[1];
@@ -476,5 +502,5 @@ function notifyClan(clanId, message) {
 }
 
 server.listen(PORT, () => {
-  console.log('Fan Clicker Clans API (Neon + WS + Members) → http://localhost:' + PORT);
+  console.log('Fan Clicker Clans API + Web (Neon + WS + Members) → http://localhost:' + PORT);
 });

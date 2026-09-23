@@ -61,7 +61,6 @@ async function getClanFull(clanId) {
   return clan;
 }
 
-// ===== HTTP server =====
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
@@ -78,7 +77,7 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (method === 'GET' && (pathname === '/' || pathname === '/api')) {
-      return send(res, 200, { ok: true, service: 'Fan Clicker Clans API', version: '3.0-ws' });
+      return send(res, 200, { ok: true, service: 'Fan Clicker Clans API', version: '3.0-ws-members' });
     }
 
     if (method === 'POST' && pathname === '/api/player') {
@@ -135,6 +134,40 @@ const server = http.createServer(async (req, res) => {
         createdAt: c.created_at
       }));
       return send(res, 200, { clans: list });
+    }
+
+    // GET /api/clans/:id/members
+    const membersMatch = pathname.match(/^\/api\/clans\/([^/]+)\/members$/);
+    if (method === 'GET' && membersMatch) {
+      const clanId = membersMatch[1];
+
+      const clan = await getClanFull(clanId);
+      if (!clan) return send(res, 404, { error: 'Клан не найден' });
+
+      const r = await pool.query(
+        `SELECT p.player_id, p.name, c.leader_id
+         FROM clan_members cm
+         JOIN players p ON p.player_id = cm.player_id
+         JOIN clans c ON c.id = cm.clan_id
+         WHERE cm.clan_id = $1
+         ORDER BY (p.player_id = c.leader_id) DESC, p.name ASC`,
+        [clanId]
+      );
+
+      return send(res, 200, {
+        clan: {
+          id: clan.id,
+          name: clan.name,
+          memberCount: clan.members.length,
+          clanFanLevel: clan.clan_fan_level || 1,
+          clanPoints: clan.clan_points || 0
+        },
+        members: r.rows.map(m => ({
+          playerId: m.player_id,
+          name: m.name || 'Игрок',
+          isLeader: m.player_id === m.leader_id
+        }))
+      });
     }
 
     if (method === 'POST' && pathname === '/api/clans') {
@@ -207,7 +240,6 @@ const server = http.createServer(async (req, res) => {
         [appId, clanId, playerId, player.name, 'pending', Date.now()]
       );
 
-      // Уведомить лидера через WebSocket, что появилась новая заявка
       notifyClan(clanId, { type: 'newApplication', playerName: player.name });
 
       return send(res, 200, { ok: true, message: 'Заявка отправлена', applicationId: appId });
@@ -287,7 +319,6 @@ const server = http.createServer(async (req, res) => {
 
       const cnt = await pool.query('SELECT COUNT(*) FROM clan_members WHERE clan_id = $1', [clan.id]);
 
-      // Уведомить всех участников клана об обновлении состава
       notifyClan(clan.id, { type: 'memberUpdate', memberCount: parseInt(cnt.rows[0].count) });
 
       return send(res, 200, {
@@ -306,7 +337,6 @@ const server = http.createServer(async (req, res) => {
       if (!player.clan_id) return send(res, 400, { error: 'Вы не в клане' });
 
       const clan = await getClanFull(player.clan_id);
-      let oldClanId = player.clan_id;
       if (clan) {
         await pool.query('DELETE FROM clan_members WHERE clan_id = $1 AND player_id = $2', [clan.id, playerId]);
         const remaining = await pool.query('SELECT player_id FROM clan_members WHERE clan_id = $1', [clan.id]);
@@ -340,7 +370,6 @@ const server = http.createServer(async (req, res) => {
       const r = await pool.query('SELECT clan_points FROM clans WHERE id = $1', [clanId]);
       const newPoints = r.rows[0].clan_points;
 
-      // === Мгновенно рассылаем всем участникам клана ===
       notifyClan(clanId, { type: 'clanPoints', points: newPoints });
 
       return send(res, 200, { ok: true, clanPoints: newPoints });
@@ -381,7 +410,6 @@ const server = http.createServer(async (req, res) => {
         );
         await client.query('COMMIT');
 
-        // Рассылаем всем
         notifyClan(clanId, { type: 'clanFanLevel', level: newLevel });
         notifyClan(clanId, { type: 'clanPoints', points: newPoints });
 
@@ -401,10 +429,8 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-// ===== WebSocket =====
 const wss = new WebSocket.Server({ server });
 
-// clanId -> Set of WebSocket clients
 const clanSockets = new Map();
 
 wss.on('connection', (ws, req) => {
@@ -450,5 +476,5 @@ function notifyClan(clanId, message) {
 }
 
 server.listen(PORT, () => {
-  console.log('Fan Clicker Clans API (Neon + WS) → http://localhost:' + PORT);
+  console.log('Fan Clicker Clans API (Neon + WS + Members) → http://localhost:' + PORT);
 });
